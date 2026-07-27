@@ -1,0 +1,16 @@
+[project]
+name = "chatagent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.140.0",
+    "inngest>=0.5.19",
+    "llama-index-core>=0.14.23",
+    "llama-index-readers-file>=0.6.0",
+    "python-dotenv>=1.2.2",
+    "qdrant-client>=1.18.0",
+    "streamlit>=1.60.0",
+    "uvicorn>=0.51.0",
+]
