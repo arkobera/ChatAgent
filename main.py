@@ -63,7 +63,7 @@ async def rag_query_pdf_ai(ctx: inngest.Context):
     question = ctx.event.data['question']
     top_k = ctx.event.data.get('top_k')
 
-    found = await ctx.step.run('embed-and-search',lambda: _search(question, top_k), output_type=RAGSearchResult)
+    found = await ctx.step.run('embed-and-search',lambda: _search(question, top_k), output_type=RAGSearchResult) #type: ignore
     context_block = "\n\n".join(f"- {c}" for c in found.contexts)
     user_content = (
         "Use the following context to answer the question.\n\n"
@@ -72,7 +72,7 @@ async def rag_query_pdf_ai(ctx: inngest.Context):
         "Answer concisely using the context above."
     )
     adapter = ai.openai.Adapter(
-        auth_key = os.getenv("GROQ_API"), 
+        auth_key = os.getenv("GROQ_API"), #type: ignore
         base_url="https://api.groq.com/openai/v1",
         model="openai/gpt-oss-120b"
     )
@@ -89,7 +89,7 @@ async def rag_query_pdf_ai(ctx: inngest.Context):
         }
     )
 
-    answer = res['choices'][0]['message']['content'].strip()
+    answer = res['choices'][0]['message']['content'].strip() #type: ignore
     return{
         "answer": answer,
         "sources": found.sources,
