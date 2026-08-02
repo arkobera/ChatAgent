@@ -11,7 +11,7 @@ import uuid
 import os
 import datetime
 
-from data_loader import load_and_chunk_pdf, embed_texts
+from data_loader import load_and_chunk_pdf_from_storage, embed_texts
 from vector_db import QdrantStorage
 from custom_types import RAGQueryResult, RAGChunkAndSrc, RAGSearchResult, RAGUpsertResult
 load_dotenv()
@@ -30,14 +30,15 @@ inngest_client = inngest.Inngest(
 )
 async def rag_ingest(ctx: inngest.Context):
     def _load(ctx: inngest.Context) -> RAGChunkAndSrc:
-        pdf_path = ctx.event.data['pdf_path']
-        source_id = ctx.event.data.get('source_id')
-        chunks = load_and_chunk_pdf(pdf_path) #type: ignore
+        storage_path = ctx.event.data['storage_path']
+        source_id = ctx.event.data.get('source_id') or storage_path
+        bucket = os.getenv("SUPABASE_BUCKET", "pdfs")
+        chunks = load_and_chunk_pdf_from_storage(bucket, storage_path) #type: ignore
         return RAGChunkAndSrc(chunks=chunks, source_id=source_id) #type: ignore
 
     def _upsert(chunk_and_src: RAGChunkAndSrc) -> RAGUpsertResult:
-        chunks = chunks_and_src.chunks
-        source_id = chunks_and_src.source_id
+        chunks = chunk_and_src.chunks
+        source_id = chunk_and_src.source_id
         vecs = embed_texts(chunks)
         ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, name= f"{source_id}:{i}")) for i in range(len(chunks))] 
         payloads = [{"source": source_id, "text": chunks[i]} for i in range(len(chunks))]

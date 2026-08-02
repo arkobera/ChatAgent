@@ -5,11 +5,19 @@ from dotenv import load_dotenv
 import requests
 import os
 import json
+import tempfile
+
+from supabase import create_client, Client
 
 load_dotenv()
 JINA_API = os.getenv('JINA_API_KEY')
 
 splitter = SentenceSplitter(chunk_size=1000, chunk_overlap=200)
+
+supabase: Client = create_client(
+    os.environ.get("SUPABASE_URL"), #type: ignore
+    os.environ.get("SUPABASE_KEY") #type: ignore
+)
 
 def load_and_chunk_pdf(path: str):
     docs = PDFReader().load_data(file=path) #type: ignore
@@ -18,6 +26,18 @@ def load_and_chunk_pdf(path: str):
     for t in texts:
         chunks.extend(splitter.split_text(t))
     return chunks
+
+
+def load_and_chunk_pdf_from_storage(bucket: str, storage_path: str):
+    pdf_bytes = supabase.storage.from_(bucket).download(storage_path)
+    file_descriptor, temporary_path = tempfile.mkstemp(suffix=".pdf")
+    try:
+        with os.fdopen(file_descriptor, "wb") as temporary_file:
+            temporary_file.write(pdf_bytes)
+        return load_and_chunk_pdf(temporary_path)
+    finally:
+        if os.path.exists(temporary_path):
+            os.remove(temporary_path)
 
 def embed_texts(texts: list[str])-> list[list[float]]:
     url = 'https://api.jina.ai/v1/embeddings'

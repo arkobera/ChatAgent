@@ -1,40 +1,50 @@
 import asyncio
 from pathlib import Path
 import time
+from uuid import uuid4
 
 import streamlit as st
 import inngest
 from dotenv import load_dotenv
 import os
 import requests
+from supabase import Client, create_client
 
 load_dotenv()
+
+SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "pdfs")
+supabase: Client = create_client(
+    os.environ.get("SUPABASE_URL"),  # type: ignore
+    os.environ.get("SUPABASE_KEY"),  # type: ignore
+)
 
 st.set_page_config(page_title="RAG Ingest PDF", page_icon="📄", layout="centered")
 
 
 @st.cache_resource
 def get_inngest_client() -> inngest.Inngest:
-    return inngest.Inngest(app_id="rag_app", is_production=False)
+    return inngest.Inngest(app_id="rag_app")
 
 
-def save_uploaded_pdf(file) -> Path:
-    uploads_dir = Path("uploads")
-    uploads_dir.mkdir(parents=True, exist_ok=True)
-    file_path = uploads_dir / file.name
-    file_bytes = file.getbuffer()
-    file_path.write_bytes(file_bytes)
-    return file_path
+def upload_pdf_to_supabase(file) -> str:
+    filename = Path(file.name).name
+    storage_path = f"uploads/{uuid4()}-{filename}"
+    supabase.storage.from_(SUPABASE_BUCKET).upload(
+        path=storage_path,
+        file=file.getvalue(),
+        file_options={"content-type": "application/pdf", "upsert": "false"},
+    )
+    return storage_path
 
 
-async def send_rag_ingest_event(pdf_path: Path) -> None:
+async def send_rag_ingest_event(storage_path: str, source_id: str) -> None:
     client = get_inngest_client()
     await client.send(
         inngest.Event(
             name="rag/ingest_pdf",
             data={
-                "pdf_path": str(pdf_path.resolve()),
-                "source_id": pdf_path.name,
+                "storage_path": storage_path,
+                "source_id": source_id,
             },
         )
     )
@@ -45,12 +55,11 @@ uploaded = st.file_uploader("Choose a PDF", type=["pdf"], accept_multiple_files=
 
 if uploaded is not None:
     with st.spinner("Uploading and triggering ingestion..."):
-        path = save_uploaded_pdf(uploaded)
-        # Kick off the event and block until the send completes
-        asyncio.run(send_rag_ingest_event(path))
+        storage_path = upload_pdf_to_supabase(uploaded)
+        asyncio.run(send_rag_ingest_event(storage_path, uploaded.name))
         # Small pause for user feedback continuity
         time.sleep(0.3)
-    st.success(f"Triggered ingestion for: {path.name}")
+    st.success(f"Uploaded and triggered ingestion for: {uploaded.name}")
     st.caption("You can upload another PDF if you like.")
 
 st.divider()
