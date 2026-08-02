@@ -1,4 +1,3 @@
-import asyncio
 from pathlib import Path
 from uuid import uuid4
 
@@ -37,9 +36,9 @@ def upload_pdf_to_supabase(file) -> str:
     return storage_path
 
 
-async def send_rag_ingest_event(storage_path: str, source_id: str) -> None:
+def send_rag_ingest_event(storage_path: str, source_id: str) -> None:
     client = get_inngest_client()
-    await client.send(
+    client.send_sync(
         inngest.Event(
             name="rag/ingest_pdf",
             data={
@@ -56,8 +55,9 @@ uploaded = st.file_uploader("Choose a PDF", type=["pdf"], accept_multiple_files=
 if uploaded is not None:
     with st.spinner("Uploading and triggering ingestion..."):
         storage_path = upload_pdf_to_supabase(uploaded)
-        st.status(storage_path)
-        asyncio.run(send_rag_ingest_event(storage_path, uploaded.name))
+        # st.status(storage_path)///
+        send_rag_ingest_event(storage_path, uploaded.name)
+
     st.success(f"Uploaded and triggered ingestion for: {uploaded.name}")
     st.caption("You can upload another PDF if you like.")
 
