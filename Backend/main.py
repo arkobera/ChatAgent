@@ -1,19 +1,18 @@
 import logging
 from fastapi import FastAPI
+from openai import OpenAI
 
 import inngest #type: ignore
 import inngest.fast_api #type: ignore
-from inngest.experimental import ai #type: ignore
 
 from dotenv import load_dotenv
 
 import uuid
 import os
-import datetime
 
 from data_loader import load_and_chunk_pdf_from_storage, embed_texts
 from vector_db import QdrantStorage
-from custom_types import RAGQueryResult, RAGChunkAndSrc, RAGSearchResult, RAGUpsertResult
+from custom_types import RAGQueryRequest, RAGQueryResult, RAGChunkAndSrc, RAGUpsertResult
 load_dotenv()
 
 inngest_client = inngest.Inngest(
@@ -49,52 +48,40 @@ async def rag_ingest(ctx: inngest.Context):
     ingested = await ctx.step.run('emdeb-and-upsert', lambda: _upsert(chunks_and_src), output_type=RAGUpsertResult) #type: ignore
     return ingested.model_dump()
 
-@inngest_client.create_function(
-    fn_id="RAG: Query PDF",
-    trigger=inngest.TriggerEvent(event="rag/query_pdf_ai")
-)
-async def rag_query_pdf_ai(ctx: inngest.Context):
-    def _search(question: str, top_k: int = 5):
-        query_vec = embed_texts([question])[0]
-        store = QdrantStorage()
-        found = store.search(query_vec, top_k)
-        return RAGSearchResult(contexts=found['contexts'], sources=found['sources'])
-
-    question = ctx.event.data['question']
-    top_k = ctx.event.data.get('top_k')
-
-    found = await ctx.step.run('embed-and-search',lambda: _search(question, top_k), output_type=RAGSearchResult) #type: ignore
-    context_block = "\n\n".join(f"- {c}" for c in found.contexts)
+def answer_question(question: str, top_k: int) -> RAGQueryResult:
+    query_vec = embed_texts([question])[0]
+    found = QdrantStorage().search(query_vec, top_k)
+    context_block = "\n\n".join(f"- {context}" for context in found["contexts"])
     user_content = (
         "Use the following context to answer the question.\n\n"
         f"Context:\n{context_block}\n"
         f"Question: {question}\n"
         "Answer concisely using the context above."
     )
-    adapter = ai.openai.Adapter(
-        auth_key = os.getenv("GROQ_API"), #type: ignore
+    client = OpenAI(
+        api_key=os.getenv("GROQ_API"),
         base_url="https://api.groq.com/openai/v1",
-        model="openai/gpt-oss-120b"
     )
-    res = await ctx.step.ai.infer(
-        "llm-answer",
-        adapter=adapter,
-        body={
-            "max_tokens":1024,
-            "temperature":0.2,
-            "messages":[
-                {"role":"system","content":"You answer questions using only the provided context."},
-                {"role":"user","content":user_content}
-            ]
-        }
+    response = client.chat.completions.create(
+        model="openai/gpt-oss-120b",
+        max_tokens=1024,
+        temperature=0.2,
+        messages=[
+            {"role": "system", "content": "You answer questions using only the provided context."},
+            {"role": "user", "content": user_content},
+        ],
     )
-
-    answer = res['choices'][0]['message']['content'].strip() #type: ignore
-    return{
-        "answer": answer,
-        "sources": found.sources,
-        "num_contexts": len(found.contexts)
-    }
+    answer = response.choices[0].message.content or ""
+    return RAGQueryResult(
+        answer=answer.strip(),
+        sources=found["sources"],
+        num_contexts=len(found["contexts"]),
+    )
 
 app = FastAPI()
-inngest.fast_api.serve(app, inngest_client, [rag_ingest, rag_query_pdf_ai])
+
+@app.post("/api/query", response_model=RAGQueryResult)
+def rag_query(query: RAGQueryRequest) -> RAGQueryResult:
+    return answer_question(query.question, query.top_k)
+
+inngest.fast_api.serve(app, inngest_client, [rag_ingest])

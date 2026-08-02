@@ -14,4 +14,9 @@ class RAGSearchResult(pydantic.BaseModel):
 class RAGQueryResult(pydantic.BaseModel):
     answer: str
     sources: list[str]
-    num_context: int
+    num_contexts: int
+
+
+class RAGQueryRequest(pydantic.BaseModel):
+    question: str
+    top_k: int = pydantic.Field(default=5, ge=1, le=20)
