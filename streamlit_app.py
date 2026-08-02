@@ -69,7 +69,7 @@ async def send_rag_query_event(question: str, top_k: int) -> None:
         )
     )
 
-    return result[0]
+    return result[0] #type: ignore
 
 
 def _inngest_api_base() -> str:
@@ -113,7 +113,7 @@ with st.form("rag_query_form"):
             # Fire-and-forget event to Inngest for observability/workflow
             event_id = asyncio.run(send_rag_query_event(question.strip(), int(top_k)))
             # Poll the local Inngest API for the run's output
-            output = wait_for_run_output(event_id)
+            output = wait_for_run_output(event_id) #type: ignore
             answer = output.get("answer", "")
             sources = output.get("sources", [])
 
