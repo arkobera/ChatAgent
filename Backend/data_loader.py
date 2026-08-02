@@ -16,7 +16,7 @@ splitter = SentenceSplitter(chunk_size=1000, chunk_overlap=200)
 
 supabase: Client = create_client(
     os.environ.get("SUPABASE_URL"), #type: ignore
-    os.environ.get("SUPABASE_KEY") #type: ignore
+    os.environ.get("SUPABASE_SERVICE_ROLE_KEY") #type: ignore
 )
 
 def load_and_chunk_pdf(path: str):

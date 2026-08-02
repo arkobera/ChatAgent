@@ -56,6 +56,7 @@ uploaded = st.file_uploader("Choose a PDF", type=["pdf"], accept_multiple_files=
 if uploaded is not None:
     with st.spinner("Uploading and triggering ingestion..."):
         storage_path = upload_pdf_to_supabase(uploaded)
+        st.status(storage_path)
         asyncio.run(send_rag_ingest_event(storage_path, uploaded.name))
     st.success(f"Uploaded and triggered ingestion for: {uploaded.name}")
     st.caption("You can upload another PDF if you like.")
