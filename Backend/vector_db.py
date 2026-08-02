@@ -1,9 +1,20 @@
-from qdrant_client import QdrantClient 
+from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, Distance, PointStruct
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 class QdrantStorage:
-    def __init__(self, url="http://localhost:6333",collection='docs',dim=1024):
-        self.client = QdrantClient(url=url, timeout=30)
+    def __init__(self, url=None, collection='docs', dim=1024):
+        url = url or os.getenv("QDRANT_URL")
+        api_key = os.getenv("QDRANT_API")
+        if not url or not api_key:
+            raise RuntimeError(
+                "QDRANT_URL and QDRANT_API must be set in your .env file."
+            )
+
+        self.client = QdrantClient(url=url, api_key=api_key, timeout=30)
         self.collection = collection
         if not self.client.collection_exists(self.collection):
             self.client.create_collection(
@@ -34,4 +45,4 @@ class QdrantStorage:
         return {
             "contexts": contexts,
             "sources":list(sources)
-        }  
+        }
