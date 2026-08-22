@@ -5,20 +5,18 @@ from openai import OpenAI
 import inngest #type: ignore
 import inngest.fast_api #type: ignore
 
-from dotenv import load_dotenv
-
 import uuid
-import os
 
+from config import IS_PRODUCTION, get_service_setting
 from data_loader import load_and_chunk_pdf_from_storage, embed_texts
 from vector_db import QdrantStorage
 from custom_types import RAGQueryRequest, RAGQueryResult, RAGChunkAndSrc, RAGUpsertResult
-load_dotenv()
-
 inngest_client = inngest.Inngest(
     app_id = 'rag_app',
     logger = logging.getLogger('uvicorn'),
-    # is_production = False,
+    is_production=IS_PRODUCTION,
+    event_key=get_service_setting("INNGEST_EVENT_KEY"),
+    signing_key=get_service_setting("INNGEST_SIGNING_KEY"),
     serializer = inngest.PydanticSerializer()
 )
 
@@ -31,7 +29,7 @@ async def rag_ingest(ctx: inngest.Context):
     def _load(ctx: inngest.Context) -> RAGChunkAndSrc:
         storage_path = ctx.event.data['storage_path']
         source_id = ctx.event.data.get('source_id') or storage_path
-        bucket = os.getenv("SUPABASE_BUCKET", "pdfs")
+        bucket = get_service_setting("SUPABASE_BUCKET", "pdfs")
         chunks = load_and_chunk_pdf_from_storage(bucket, storage_path) #type: ignore
         return RAGChunkAndSrc(chunks=chunks, source_id=source_id) #type: ignore
 
@@ -59,7 +57,7 @@ def answer_question(question: str, top_k: int) -> RAGQueryResult:
         "Answer concisely using the context above."
     )
     client = OpenAI(
-        api_key=os.getenv("GROQ_API"),
+        api_key=get_service_setting("GROQ_API"),
         base_url="https://api.groq.com/openai/v1",
     )
     response = client.chat.completions.create(

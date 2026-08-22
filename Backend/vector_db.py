@@ -1,20 +1,23 @@
 from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, Distance, PointStruct
-from dotenv import load_dotenv
 import os
 
-load_dotenv()
+from config import IS_PRODUCTION, get_service_setting
 
 class QdrantStorage:
     def __init__(self, url=None, collection='docs', dim=1024):
-        url = url or os.getenv("QDRANT_URL")
-        api_key = os.getenv("QDRANT_API")
-        if not url or not api_key:
-            raise RuntimeError(
-                "QDRANT_URL and QDRANT_API must be set in your .env file."
-            )
+        if IS_PRODUCTION:
+            url = url or get_service_setting("QDRANT_URL")
+            api_key = get_service_setting("QDRANT_API")
+        else:
+            url = url or os.getenv("QDRANT_URL_LOCAL", "http://127.0.0.1:6333")
+            api_key = os.getenv("QDRANT_API_LOCAL")
+        if not url:
+            raise RuntimeError("QDRANT_URL must be set when APP_ENV=PROD.")
+        if IS_PRODUCTION and not api_key:
+            raise RuntimeError("QDRANT_API must be set when APP_ENV=PROD.")
 
-        self.client = QdrantClient(url=url, api_key=api_key, timeout=30)
+        self.client = QdrantClient(url=url, api_key=api_key or None, timeout=30)
         self.collection = collection
         if not self.client.collection_exists(self.collection):
             self.client.create_collection(
