@@ -10,25 +10,53 @@ from supabase import Client, create_client
 
 load_dotenv()
 
-SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "pdfs")
-BACKEND_API_URL = os.getenv("RENDER_API", "").rstrip("/")
-supabase: Client = create_client(
-    os.environ.get("SUPABASE_URL"),  # type: ignore
-    os.environ.get("SUPABASE_KEY"),  # type: ignore
-)
+APP_ENV = os.getenv("APP_ENV", "LOCAL").strip().upper()
+if APP_ENV not in {"LOCAL", "PROD"}:
+    raise RuntimeError("APP_ENV must be either 'LOCAL' or 'PROD'.")
+
+
+def get_service_setting(name: str, default: str | None = None) -> str | None:
+    return os.getenv(f"{name}_{APP_ENV}") or os.getenv(name, default)
+
+
+IS_PRODUCTION = APP_ENV == "PROD"
+SUPABASE_BUCKET = get_service_setting("SUPABASE_BUCKET", "pdfs")
+LOCAL_UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
+BACKEND_API_URL = (
+    get_service_setting("RENDER_API", "") if IS_PRODUCTION
+    else get_service_setting("BACKEND_API_URL", "http://127.0.0.1:8000")
+).rstrip("/") #type: ignore
+supabase: Client | None = None
+if IS_PRODUCTION:
+    supabase = create_client(
+        get_service_setting("SUPABASE_URL"),  # type: ignore
+        get_service_setting("SUPABASE_KEY"),  # type: ignore
+    )
 
 st.set_page_config(page_title="RAG Ingest PDF", page_icon="📄", layout="centered")
 
 
 @st.cache_resource
 def get_inngest_client() -> inngest.Inngest:
-    return inngest.Inngest(app_id="rag_app")
+    return inngest.Inngest(
+        app_id="rag_app",
+        is_production=IS_PRODUCTION,
+        event_key=get_service_setting("INNGEST_EVENT_KEY"),
+        signing_key=get_service_setting("INNGEST_SIGNING_KEY"),
+    )
 
 
-def upload_pdf_to_supabase(file) -> str:
+def upload_pdf(file) -> str:
     filename = Path(file.name).name
     storage_path = f"uploads/{uuid4()}-{filename}"
-    supabase.storage.from_(SUPABASE_BUCKET).upload(
+    if not IS_PRODUCTION:
+        LOCAL_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        (LOCAL_UPLOAD_DIR / Path(storage_path).name).write_bytes(file.getvalue())
+        return storage_path
+
+    if supabase is None:
+        raise RuntimeError("Supabase storage is only available when APP_ENV=PROD.")
+    supabase.storage.from_(SUPABASE_BUCKET).upload( #type: ignore
         path=storage_path,
         file=file.getvalue(),
         file_options={"content-type": "application/pdf", "upsert": "false"},
@@ -54,7 +82,7 @@ uploaded = st.file_uploader("Choose a PDF", type=["pdf"], accept_multiple_files=
 
 if uploaded is not None:
     with st.spinner("Uploading and triggering ingestion..."):
-        storage_path = upload_pdf_to_supabase(uploaded)
+        storage_path = upload_pdf(uploaded)
         # st.status(storage_path)///
         send_rag_ingest_event(storage_path, uploaded.name)
 
