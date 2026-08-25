@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 import os
 import requests
 from supabase import Client, create_client
+from Authentication.auth import Auth, AuthScreen
 
 load_dotenv()
 
@@ -34,6 +35,29 @@ if IS_PRODUCTION:
     )
 
 st.set_page_config(page_title="RAG Ingest PDF", page_icon="📄", layout="centered")
+
+
+def require_authentication() -> None:
+    """Render the sign-in page and stop before protected app content."""
+    if not st.session_state.get("user_email"):
+        AuthScreen().auth_screen()
+        st.stop()
+
+
+def render_logout() -> None:
+    with st.sidebar:
+        st.caption(f"Signed in as {st.session_state.user_email}")
+        if st.button("Sign out"):
+            error = Auth().sign_out()
+            if error:
+                st.error(f"Sign out failed: {error}")
+                return
+            st.session_state.pop("user_email", None)
+            st.rerun()
+
+
+require_authentication()
+render_logout()
 
 
 @st.cache_resource
