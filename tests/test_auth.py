@@ -32,7 +32,7 @@ class FakeClient:
 class AuthTests(unittest.TestCase):
     def setUp(self):
         self.client = FakeClient()
-        self.auth = Auth(self.client)
+        self.auth = Auth(self.client) #type: ignore
 
     def test_sign_up_passes_credentials_to_supabase(self):
         result = self.auth.sign_up("user@example.com", "secure-password")
@@ -60,7 +60,7 @@ class AuthTests(unittest.TestCase):
         def fail_sign_in(_credentials):
             raise ValueError("invalid credentials")
 
-        self.client.auth.sign_in_with_password = fail_sign_in
+        self.client.auth.sign_in_with_password = fail_sign_in #type: ignore
         with patch("Frontend.Authentication.auth.st.error") as error:
             result = self.auth.sign_in("user@example.com", "wrong-password")
 
