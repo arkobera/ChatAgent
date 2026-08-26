@@ -632,6 +632,11 @@ def generate_dataset(
     )
 
 if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()
+    import os
+    PATH = os.getenv('DATA_STORAGE_PATH')
+    # print(PATH)
     # Generate a small dataset for testing
     dataset, graph = generate_dataset(
         n_customers=1000,
@@ -639,23 +644,96 @@ if __name__ == "__main__":
         abuse_rate=0.08,
         ring_rate=0.03
     )
-    dataset.to_csv('return_abuse_dataset.csv', index=False)
+
+    dataset.to_csv(os.path.join(PATH,'data.csv'), index=False) #type: ignore
     graph_json = {
     'nodes': [{'id': str(n), 'type': data.get('type', 'unknown')} for n, data in graph.nodes(data=True)],
     'edges': [{'source': str(u), 'target': str(v), 'weight': data.get('weight', 1)} 
               for u, v, data in graph.edges(data=True)]
             }
-    with open('return_abuse_graph.json', 'w') as f:
+    
+    with open(os.path.join(PATH,'return_abuse_graph.json'), 'w') as f: #type: ignore
         json.dump(graph_json, f, indent=2)
-    print("\nDataset shape:", dataset.shape)
-    print("\nDataset columns:", dataset.columns.tolist())
-    print("\nAbuse distribution:")
-    print(dataset['abuse_label'].value_counts())
-    print("\nAbuse type distribution:")
-    print(dataset['abuse_type'].value_counts())
-    print("\nSplit distribution:")
-    print(dataset['split'].value_counts())
-    print("\nSample data:")
-    print(dataset.head())
-    print("\nGraph nodes:", graph.number_of_nodes())
-    print("Graph edges:", graph.number_of_edges())
+    # print("\nDataset shape:", dataset.shape)
+    # print("\nDataset columns:", dataset.columns.tolist())
+    # print("\nAbuse distribution:")
+    # print(dataset['abuse_label'].value_counts())
+    # print("\nAbuse type distribution:")
+    # print(dataset['abuse_type'].value_counts())
+    # print("\nSplit distribution:")
+    # print(dataset['split'].value_counts())
+    # print("\nSample data:")
+    # print(dataset.head())
+    # print("\nGraph nodes:", graph.number_of_nodes())
+    # print("Graph edges:", graph.number_of_edges())
+
+
+
+# Main execution script
+if __name__ == "__main__":
+    # Load the generated dataset
+    from dotenv import load_dotenv
+    import os
+    load_dotenv()
+
+    PATH = os.getenv('DATA_STORAGE_PATH')
+
+
+    print("Loading dataset...")
+    dataset = pd.read_csv(os.path.join(PATH,'data.csv')) #type: ignore
+    
+    print(f"Original dataset shape: {dataset.shape}")
+    print(f"Columns: {dataset.columns.tolist()}")
+    
+    # Initialize feature engineer
+    fe = FeatureEngineer(target_col='abuse_label') #type: ignore
+    
+    print("\nPerforming feature engineering...")
+    engineered_df = fe.engineer_features(dataset)
+    
+    print(f"Engineered dataset shape: {engineered_df.shape}")
+    print(f"New columns: {len(engineered_df.columns)}")
+    
+    # Prepare for modeling
+    print("\nPreparing data for modeling...")
+    X_train, X_test, y_train, y_test, selected_features = fe.prepare_for_modeling( #type: ignore
+        engineered_df, test_size=0.2
+    )
+    
+    print(f"Training set: {X_train.shape}")
+    print(f"Test set: {X_test.shape}") #type: ignore
+    
+    # Show feature importance
+    print("\nTop 20 most important features:")
+    print(fe.get_feature_importance().head(20)) #type: ignore
+    
+    # Save processed data
+    print("\nSaving processed data...")
+    np.save('X_train.npy', X_train)
+    np.save('X_test.npy', X_test)
+    np.save('y_train.npy', y_train)
+    np.save('y_test.npy', y_test)
+    
+    with open('selected_features.txt', 'w') as f:
+        for feat in selected_features:
+            f.write(f"{feat}\n")
+    
+    # Save feature importance
+    fe.get_feature_importance().to_csv(os.path.join(PATH,'fe_imp.csv'), index=False) #type: ignore
+    
+    # Save engineered dataset (with all features)
+    engineered_df.to_csv(os.path.join(PATH,'transformed_data.csv'), index=False) #type: ignore
+    
+    print("\n✅ Feature engineering complete!")
+    print("Files saved:")
+    print("  - X_train.npy, X_test.npy, y_train.npy, y_test.npy")
+    print("  - selected_features.txt")
+    print("  - feature_importance.csv")
+    print("  - return_abuse_dataset_engineered.csv")
+    
+    # Summary statistics
+    print("\n📊 Dataset Statistics:")
+    print(f"  - Total samples: {len(engineered_df)}")
+    print(f"  - Features: {len(selected_features)}")
+    print(f"  - Abuse rate: {y_train.mean():.2%} (train), {y_test.mean():.2%} (test)")
+    print(f"  - Train/Test split: {len(X_train)} / {len(X_test)}")
