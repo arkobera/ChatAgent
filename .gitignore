@@ -219,3 +219,13 @@ __marimo__/
 
 /Frontend/uploads*
 /uploads/
+
+*.csv
+*.json
+*.npy
+*.txt
+*.joblib 
+
+/wandb/
+/dataHub/
+/Backend/risk/wandb/

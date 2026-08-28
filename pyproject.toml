@@ -12,7 +12,9 @@ dependencies = [
     "openai>=2.50.0",
     "python-dotenv>=1.2.2",
     "qdrant-client>=1.18.0",
+    "scikit-learn>=1.7.2",
     "streamlit>=1.60.0",
     "supabase>=2.31.0",
     "uvicorn>=0.51.0",
+    "wandb>=0.18.0",
 ]
