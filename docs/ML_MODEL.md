@@ -215,8 +215,306 @@ python -m unittest tests.test_risk.TestWandbArtifactDownload -v
 
 | File | Purpose |
 |---|---|
-| `Backend/risk/return_model.py` | Model class, preprocessing, W&B integration |
+| `Backend/risk/return_model.py` | Behavioral model class, preprocessing, W&B integration |
+| `Backend/risk/graph_model.py` | Graph-based network risk model |
 | `Backend/risk/features.py` | Feature engineering pipeline (used by `build_data.py`) |
 | `Backend/risk/build_data.py` | Dataset generation (produces `transformed_data.csv`) |
 | `tests/test_risk.py` | Unit + integration tests |
-| `dataHub/transformed_data.csv` | Pre-engineered dataset consumed by the model |
+| `dataHub/transformed_data.csv` | Pre-engineered dataset consumed by the models |
+
+## FlowChart
+```
+
+                 Return Model
+                      │
+       ┌──────────────┴──────────────┐
+       │                             │
+ Behavioral features          Transaction features
+       │                             │
+       └──────────────┬──────────────┘
+                      ↓
+                 ML classifier
+                      ↓
+                Return Risk
+```
+
+---
+
+# Graph Model — ReturnGuard
+
+## Overview
+
+The **graph model** (`Backend/risk/graph_model.py`) is the second-layer defense in the ReturnGuard pipeline. It determines whether a customer is part of a suspicious network based on shared entities (devices, IPs, addresses, payments) with other customers.
+
+While the behavioral model (`return_model.py`) analyzes individual return patterns, the graph model answers: **"Does this customer have an unusually suspicious relationship with other customers/entities?"**
+
+---
+
+## Architecture
+
+```
+Orders DataFrame (customer_id, device_id, ip_id, address_id, payment_id)
+        │
+        ▼
+┌──────────────────────────────────────────────┐
+│  build_entity_index(orders)                  │  ← inverted index: entity → {customers}
+│  O(E) where E = number of orders             │
+└──────────────────┬───────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────┐
+│  build_customer_graph(entity_index)          │  ← customer↔customer via shared entities
+│  Edge attrs: shared_entity_types, n_shared   │
+└──────────────────┬───────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────┐
+│  extract_customer_features(                  │  ← 18 features per customer
+│    customer_graph, customer_entities, orders)│     No target labels
+│  )                                           │
+└──────────────────┬───────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────┐
+│  Temporal graph snapshots per split          │  ← train graph, val graph, test graph
+└──────────────────┬───────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────┐
+│  RandomForestClassifier                      │  ← class_weight="balanced"
+│  + threshold optimization                    │     F1 or cost-based selection
+└──────────────────┬───────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────┐
+│  W&B logging + artifact save                 │  ← artifact: "graph-risk-model"
+└──────────────────────────────────────────────┘
+```
+
+---
+
+## Model Choice
+
+| Property | Value |
+|---|---|
+| Algorithm | `RandomForestClassifier` (scikit-learn) |
+| Class weighting | `balanced` (auto-adjusts for class imbalance) |
+| n_estimators | 100 |
+| max_depth | 5 |
+| n_jobs | -1 (parallel) |
+
+A random forest is used as the baseline. It handles non-linear relationships, is robust to feature scaling, and provides feature importances. The model is trained on customer-level graph features only — no behavioral or transaction features.
+
+---
+
+## Graph Features (18 total)
+
+| Category | Features |
+|---|---|
+| Entity counts (4) | `device_count`, `ip_count`, `address_count`, `payment_count` |
+| Shared-entity customer counts (4) | `shared_device_customers`, `shared_ip_customers`, `shared_address_customers`, `shared_payment_customers` |
+| Max sharing (4) | `max_device_sharing`, `max_ip_sharing`, `max_address_sharing`, `max_payment_sharing` |
+| Neighborhood (2) | `one_hop_customer_count`, `two_hop_customer_count` |
+| Community (2) | `community_size`, `community_density` |
+| Structural (2) | `customer_degree`, `local_clustering_coefficient` |
+
+### Feature Descriptions
+
+- **Entity counts**: Number of distinct devices/IPs/addresses/payments used by the customer.
+- **Shared-entity customer counts**: How many OTHER customers share at least one entity of each type.
+- **Max sharing**: Maximum number of customers sharing any single entity (e.g., if one device is used by 5 customers, max_device_sharing = 5).
+- **One-hop customers**: Customers directly connected via a shared entity.
+- **Two-hop customers**: Customers reachable through another customer/entity (BFS depth=2).
+- **Community size**: Size of the customer's community detected via greedy modularity.
+- **Community density**: Internal edge density of the community.
+- **Customer degree**: Total number of entity connections.
+- **Local clustering coefficient**: NetworkX clustering coefficient for the customer node.
+
+### Excluded by Design
+
+- `abuse_label`, `abuse_type`, `scenario`, `ring_id` — ground truth / metadata
+- Return-level and order-level outcomes
+- Behavioral features (reserved for `return_model.py`)
+
+---
+
+## Temporal Strategy
+
+Graph snapshots are built per split using only orders within that split's time period:
+
+```
+For each split (train / validation / test):
+  1. Filter orders to that split
+  2. Build entity_index from those orders
+  3. Build customer_graph from entity_index
+  4. Extract features for all customers in the graph
+```
+
+This avoids temporal leakage because each split's graph only contains orders from that split's time period. For production inference, build the graph from all available historical orders.
+
+---
+
+## API Reference
+
+### `GraphRiskModel`
+
+```python
+from Backend.risk.graph_model import GraphRiskModel
+
+model = GraphRiskModel(
+    wandb_project="returnguard",
+    wandb_entity=None,
+    max_iter=100,        # number of trees
+    max_depth=5,
+    random_state=42,
+)
+```
+
+#### `fit(orders, returns_df, validation_orders=None, validation_returns=None, run_name=None)`
+
+Trains the graph model. Builds graph from orders, extracts customer features, trains classifier.
+
+```python
+import pandas as pd
+df = pd.read_csv("dataHub/data_v2.csv")
+train_df = df[df["split"] == "train"]
+model.fit(orders=train_df, returns_df=train_df)
+```
+
+Logs to W&B:
+- Train / validation metrics (accuracy, precision, recall, F1, ROC-AUC, PR-AUC)
+- Confusion matrices
+- Feature importances
+- Model artifact (`graph-risk-model:latest`)
+
+#### `predict_proba(orders, returns_df=None) -> DataFrame`
+
+Returns a DataFrame with `customer_id` and `network_risk_probability`.
+
+#### `predict(orders, returns_df=None, threshold=None) -> DataFrame`
+
+Returns a DataFrame with `customer_id`, `network_risk_probability`, and `network_risk_label`.
+
+#### `evaluate(orders, returns_df, threshold=None) -> dict`
+
+Returns a dict of evaluation metrics.
+
+#### `find_best_threshold(orders, returns_df, fp_cost=1.0, fn_cost=5.0, criterion="f1") -> float`
+
+Finds the optimal threshold on validation data. Supports F1 maximization or cost minimization.
+
+#### `get_customer_risk_explanation(customer_id, orders) -> dict`
+
+Returns a structured explanation suitable for UI display:
+
+```python
+{
+    "customer_id": "C1",
+    "network_risk_probability": 0.87,
+    "threshold": 0.5,
+    "is_high_risk": True,
+    "entity_counts": {"devices": 2, "ips": 3, "addresses": 1, "payments": 1},
+    "sharing": {"shared_device_customers": 4, "shared_ip_customers": 6, ...},
+    "neighborhood": {"one_hop_customer_count": 8, "two_hop_customer_count": 23},
+    "community": {"community_size": 14, "community_density": 0.31},
+    "structural": {"customer_degree": 7, "local_clustering_coefficient": 0.42},
+}
+```
+
+#### `save(path)` / `load(path)`
+
+Local persistence via `joblib`.
+
+#### `load_from_wandb(project, entity, artifact_name, tag)`
+
+Downloads the model artifact from W&B.
+
+---
+
+## W&B Integration
+
+| Item | Detail |
+|---|---|
+| API key source | `WANDB` env var in `.env` |
+| Project | `returnguard` |
+| Artifact name | `graph-risk-model` |
+| Artifact aliases | `latest`, `production` |
+| Logged metrics | `train/*`, `val/*` (accuracy, precision, recall, f1, roc_auc, pr_auc, confusion matrix) |
+| Logged tables | `feature_importances` |
+
+---
+
+## Test Results (real dataset)
+
+```
+Dataset: data_v2.csv (1823 rows, 507 customers)
+Train: 1367 rows (436 customers)
+Val:   182 rows (130 customers)
+Test:  274 rows (177 customers)
+
+Test Metrics:
+  accuracy:  0.4350
+  precision: 0.3667
+  recall:    0.9167
+  f1:        0.5238
+  roc_auc:   0.6907
+  pr_auc:    0.5437
+  false_positive_rate: 0.8120
+```
+
+### Interpretation
+
+The graph model achieves high recall (0.9167) but with a high false positive rate (0.8120). This is expected given the dataset limitations:
+
+1. **Entity sharing is ubiquitous**: 507 customers compete for 56 devices (~9 customers/device on average). Random entity collision creates dense sharing patterns regardless of abuse status.
+2. **Ring is tiny**: Only 2 customers out of 507 are ring members (0.7%). The graph cannot learn meaningful ring-detection patterns from this.
+3. **The model learns from noise**: Entity sharing patterns in the synthetic data reflect random assignment, not coordinated abuse behavior.
+
+**This performance must not be interpreted as evidence of real-world ring detection capability.** It is a synthetic-experiment result only.
+
+---
+
+## Limitations of `build_data.py` v2
+
+| Limitation | Impact |
+|---|---|
+| Ring members are only 2 customers (0.7%) | Community detection and shared-entity patterns are too weak to learn |
+| `ring_id` column is empty in CSV | Cannot verify ring grouping |
+| Entity assignment is random per customer | Graph structure reflects random collision, not behavior |
+| Non-ring customers also share entities randomly | Dense graph with no clear abuse signal |
+
+### Recommendations
+
+1. **Increase ring size**: Make ring members 20-30% of abusers (currently ~3%).
+2. **Make entity sharing deterministic per scenario**: Ring members should share entities more heavily than normal customers.
+3. **Add `ring_id` to the CSV output**: Fix the merge in `_create_final_dataset`.
+4. **Reduce entity pool size**: Fewer devices/IPs per customer creates more meaningful sharing patterns.
+
+---
+
+## Running Tests
+
+```bash
+# Graph model unit tests (no W&B)
+python -m unittest tests.test_risk.TestGraphRiskModelLocal -v
+
+# W&B integration test (requires WANDB env var)
+set WANDB=your_wandb_key
+python -m unittest tests.test_risk.TestGraphRiskModelWandb -v
+
+# All tests
+python -m unittest tests.test_risk -v
+```
+
+---
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `Backend/risk/graph_model.py` | Graph model class, feature extraction, W&B integration |
+| `Backend/risk/return_model.py` | Behavioral model (for comparison) |
+| `Backend/risk/build_data.py` | Dataset generation with entity assignment |
+| `tests/test_risk.py` | Unit + integration tests |
+| `dataHub/data_v2.csv` | Raw dataset with orders, returns, and entities |
+| `dataHub/transformed_data.csv` | Feature-engineered dataset |
