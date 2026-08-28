@@ -224,3 +224,8 @@ __marimo__/
 *.json
 *.npy
 *.txt
+*.joblib 
+
+/wandb/
+/dataHub/
+/Backend/risk/wandb/

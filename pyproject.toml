@@ -16,4 +16,5 @@ dependencies = [
     "streamlit>=1.60.0",
     "supabase>=2.31.0",
     "uvicorn>=0.51.0",
+    "wandb>=0.18.0",
 ]

@@ -8,10 +8,10 @@ ChatAgent/
 │   ├── main.py
 │   ├── vector_db.py
 │   │
-│   ├── risk/                    ← NEW
+│   ├── risk/
 │   │   ├── __init__.py
-│   │   ├── buil_data.py
-|   |   |-- features.py
+│   │   ├── build_data.py
+│   │   ├── features.py
 │   │   ├── return_model.py
 │   │   ├── graph_model.py
 │   │   └── risk_engine.py
