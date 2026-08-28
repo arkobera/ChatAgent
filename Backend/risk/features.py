@@ -647,23 +647,18 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         else:
             y = None
             X_full = df.copy()
-
+        drop_cols = ['customer_id', 'order_id', 'return_id', 'ring_id', 'scenario', 'abuse_type', 'split']
         # Remove abuse_type if present (leaky auxiliary label)
-        if "abuse_type" in X_full.columns:
-            X_full = X_full.drop(columns=["abuse_type"])
+        for col in drop_cols:
+            if col in X_full.columns:
+                X_full = X_full.drop(columns=[col])
 
-        # Identify split strategy
-        has_temporal = use_temporal_split and "split" in X_full.columns and X_full["split"].nunique() > 1
-
+        has_temporal = use_temporal_split and 'split' in df.columns and df['split'].nunique() > 1
         if has_temporal:
-            # Use build_data temporal split
-            train_mask = X_full["split"] == "train"
-            test_mask = X_full["split"].isin(["test", "validation"])
-            # Edge: if only train/test without validation, fallback
+            train_mask = df['split'] == 'train'
+            test_mask = df['split'].isin(['test', 'validation'])
             if test_mask.sum() == 0:
-                test_mask = X_full["split"] == "test"
-            # Drop split col before processing
-            X_full = X_full.drop(columns=["split"])
+                test_mask = df['split'] == 'test'
             X_train_raw = X_full[train_mask].copy()
             X_test_raw = X_full[test_mask].copy()
             if y is not None:
@@ -671,94 +666,86 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
                 y_test = y[test_mask]
             else:
                 y_train = y_test = None
-            # If train or test empty, fallback to random split
             if len(X_train_raw) == 0 or len(X_test_raw) == 0:
                 warnings.warn("Temporal split resulted in empty train/test, falling back to random split.")
                 has_temporal = False
 
+
         if not has_temporal:
-            # Fallback: random stratified split - but we need to engineer before split?
-            # For pipeline correctness, we split raw X_full before fitting transformers
-            # So here we split indices first, then fit on train only
             if y is not None:
                 X_train_raw, X_test_raw, y_train, y_test = train_test_split(
                     X_full, y, test_size=test_size, random_state=self.random_state, stratify=y
                 )
             else:
-                # no y, just return engineered scaled data
                 X_train_raw = X_full
                 X_test_raw = None
                 y_train = y_test = None
 
-        # Now fit transformers on train only
-        # Build numeric/categorical detection on train
-        # Drop datetime cols from train/test consistently
-        datetime_cols = X_train_raw.select_dtypes(include=["datetime64[ns]", "datetime64"]).columns.tolist()
-        X_train_raw = X_train_raw.drop(columns=datetime_cols, errors="ignore")
+        datetime_cols = X_train_raw.select_dtypes(include=['datetime64[ns]', 'datetime64']).columns.tolist()
+        X_train_raw = X_train_raw.drop(columns=datetime_cols, errors='ignore')
         if X_test_raw is not None:
-            X_test_raw = X_test_raw.drop(columns=datetime_cols, errors="ignore")
+            X_test_raw = X_test_raw.drop(columns=datetime_cols, errors='ignore')
 
-        # Categorical handling - fit on train
-        categorical_cols = X_train_raw.select_dtypes(include=["object", "category"]).columns.tolist()
+        categorical_cols = X_train_raw.select_dtypes(include=['object', 'category']).columns.tolist()
         numeric_cols = X_train_raw.select_dtypes(include=[np.number]).columns.tolist()
-
-        # Remove any datetime that leaked into numeric (should already be dropped)
-        for col in datetime_cols:
-            if col in numeric_cols:
-                numeric_cols.remove(col)
 
         self.encoders = {}
         for col in categorical_cols:
-            if col in X_train_raw.columns and X_train_raw[col].nunique() < 50:
+            if X_train_raw[col].nunique() < 50:
                 le = LabelEncoder()
-                vals = X_train_raw[col].astype(object).where(X_train_raw[col].notna(), "unknown").astype(str)
-                vals = vals.replace("nan", "unknown")
+                vals = X_train_raw[col].astype(object).where(X_train_raw[col].notna(), 'unknown').astype(str)
+                vals = vals.replace('nan', 'unknown')
                 le.fit(vals)
                 self.encoders[col] = le
-                X_train_raw[col + "_encoded"] = le.transform(vals)
+                X_train_raw[col + '_encoded'] = le.transform(vals)
                 if X_test_raw is not None and col in X_test_raw.columns:
-                    # apply to test with unseen handling
-                    test_vals = X_test_raw[col].astype(object).where(X_test_raw[col].notna(), "unknown").astype(str)
-                    test_vals = test_vals.replace("nan", "unknown")
+                    test_vals = X_test_raw[col].astype(object).where(X_test_raw[col].notna(), 'unknown').astype(str)
+                    test_vals = test_vals.replace('nan', 'unknown')
                     known = set(le.classes_)
-                    test_vals = test_vals.apply(lambda v: v if v in known else ("unknown" if "unknown" in known else le.classes_[0]))
-                    X_test_raw[col + "_encoded"] = le.transform(test_vals)
+                    test_vals = test_vals.apply(lambda v: v if v in known else ('unknown' if 'unknown' in known else le.classes_[0]))
+                    X_test_raw[col + '_encoded'] = le.transform(test_vals)
                 elif X_test_raw is not None:
-                    X_test_raw[col + "_encoded"] = 0
-                numeric_cols.append(col + "_encoded")
+                    X_test_raw[col + '_encoded'] = 0
+                numeric_cols.append(col + '_encoded')
 
-        # After encoding, keep only numeric columns for modeling
-        # Note: original categorical cols remain but are not used
         numeric_cols = [c for c in numeric_cols if c in X_train_raw.columns]
 
-        # Imputer fit on train
-        self.imputer = SimpleImputer(strategy="median")
-        self.numeric_cols_ = numeric_cols
-        if numeric_cols:
-            self.imputer.fit(X_train_raw[numeric_cols])
-            X_train_raw[numeric_cols] = self.imputer.transform(X_train_raw[numeric_cols])
-            if X_test_raw is not None:
-                # ensure test has same cols
-                for col in numeric_cols:
-                    if col not in X_test_raw.columns:
-                        X_test_raw[col] = 0
-                X_test_raw[numeric_cols] = self.imputer.transform(X_test_raw[numeric_cols])
+        for col in numeric_cols[:]:  # iterate over a copy
+            if X_train_raw[col].isna().all():
+                numeric_cols.remove(col)
+                continue
+            if X_train_raw[col].nunique() <= 1:
+                numeric_cols.remove(col)
+                continue
 
-        # Feature selection fit on train only
+        if not numeric_cols:
+            warnings.warn("No valid numeric features found. Returning empty arrays.")
+            return np.array([]), np.array([]), y_train, y_test, []
+
+        self.imputer = SimpleImputer(strategy='median')
+
+        self.imputer.fit(X_train_raw[numeric_cols])
+        X_train_raw[numeric_cols] = self.imputer.transform(X_train_raw[numeric_cols])
+
+        if X_test_raw is not None:
+            for col in numeric_cols:
+                if col not in X_test_raw.columns:
+                    X_test_raw[col] = 0
+            X_test_raw[numeric_cols] = self.imputer.transform(X_test_raw[numeric_cols])
+        # Identify split strategy
         if y_train is not None and len(numeric_cols) > 0:
             k = min(50, len(numeric_cols))
             self.selector = SelectKBest(score_func=f_classif, k=k)
             self.selector.fit(X_train_raw[numeric_cols], y_train)
             selected_indices = self.selector.get_support(indices=True)
             self.selected_features = [numeric_cols[i] for i in selected_indices]
-            self.feature_importance = pd.DataFrame({"feature": numeric_cols, "score": self.selector.scores_}).sort_values("score", ascending=False)
+            self.feature_importance = pd.DataFrame({'feature': numeric_cols, 'score': self.selector.scores_}).sort_values('score', ascending=False)
             print(f"Selected {len(self.selected_features)} features out of {len(numeric_cols)}")
         else:
             self.selected_features = numeric_cols
             self.selector = None
             self.feature_importance = None
 
-        # Final feature sets
         if self.selected_features:
             X_train_final = X_train_raw[self.selected_features]
             X_test_final = X_test_raw[self.selected_features] if X_test_raw is not None else None
@@ -766,19 +753,14 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
             X_train_final = X_train_raw[numeric_cols] if numeric_cols else X_train_raw
             X_test_final = X_test_raw[numeric_cols] if X_test_raw is not None and numeric_cols else X_test_raw
 
-        # Scale fit on train
-        if y is not None:
-            self.scaler = StandardScaler()
-            X_train_scaled = self.scaler.fit_transform(X_train_final)
-            X_test_scaled = self.scaler.transform(X_test_final) if X_test_final is not None else None
-            self.is_fitted = True
-            return X_train_scaled, X_test_scaled, y_train, y_test, self.selected_features
-        else:
-            self.scaler = StandardScaler()
-            # For inference path, X_train_raw actually holds all data
-            X_scaled = self.scaler.fit_transform(X_train_final)
-            self.is_fitted = True
-            return X_scaled, self.selected_features
+    # Scale
+        self.scaler = StandardScaler()
+        X_train_scaled = self.scaler.fit_transform(X_train_final)
+        X_test_scaled = self.scaler.transform(X_test_final) if X_test_final is not None else None
+
+        self.is_fitted = True
+        return X_train_scaled, X_test_scaled, y_train, y_test, self.selected_features
+        
 
     def get_feature_importance(self):
         """Get feature importance scores"""
@@ -798,7 +780,7 @@ if __name__ == "__main__":
     os.makedirs(PATH, exist_ok=True)
 
     print("Loading dataset...")
-    dataset_path = os.path.join(PATH, "data.csv")
+    dataset_path = os.path.join(PATH, "data_v2.csv")
     if not os.path.exists(dataset_path):
         raise FileNotFoundError(f"Dataset not found at {dataset_path}. Generate it via build_data.py first.")
     dataset = pd.read_csv(dataset_path)

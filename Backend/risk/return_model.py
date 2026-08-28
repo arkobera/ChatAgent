@@ -478,6 +478,8 @@ if __name__ == '__main__':
     from dotenv import load_dotenv
     import os
     load_dotenv()
+
+    ver = 2
     PATH = os.getenv('DATA_STORAGE_PATH')
     req_path = os.path.join(PATH,'transformed_data.csv') #type: ignore
     df = pd.read_csv(req_path)
