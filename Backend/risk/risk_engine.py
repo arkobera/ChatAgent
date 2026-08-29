@@ -14,6 +14,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
+import json
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
@@ -250,8 +251,10 @@ if __name__ == '__main__':
     import pandas as pd
     from dotenv import load_dotenv
     import os
+    import json
     load_dotenv()
     PATH = os.getenv('DATA_STORAGE_PATH')
+    OUTPUT = os.path.join(PATH,'result.json') #type: ignore
 
     returns_path = os.path.join(PATH,'transformed_data.csv') #type: ignore
     orders_path = os.path.join(PATH,'data_v2.csv') #type: ignore
@@ -262,3 +265,6 @@ if __name__ == '__main__':
     print("Models Loaded Successfully")
     result = engine.evaluate(returns_df=returns_df,orders_df=orders_df)
     print(result)
+    with open(OUTPUT, "w") as f:
+        json.dump(result, f, indent=4)
+
