@@ -292,6 +292,434 @@ class TestReturnRiskModelSignature(unittest.TestCase):
         self.assertEqual(len(proba), len(test_df))
 
 
+class TestGraphRiskModelLocal(unittest.TestCase):
+    """Unit tests for GraphRiskModel that run locally (no W&B)."""
+
+    # ------------------------------------------------------------------ #
+    # Helpers
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _make_orders_and_returns():
+        """Create deterministic orders/returns for a hand-crafted graph.
+
+        Graph structure:
+            C1 -- D1 -- C2     (C1 and C2 share device D1)
+            C1 -- IP1 -- C2    (C1 and C2 share IP IP1)
+            C3 -- D2 -- C4     (C3 and C4 share device D2)
+            C5 (isolated, no shared entities)
+
+        Returns:
+            C1: 1 abusive return
+            C2: 1 abusive return
+            C3: 1 legitimate return
+            C4: 1 legitimate return
+            C5: 1 legitimate return
+        """
+        orders = pd.DataFrame(
+            [
+                # C1 uses D1, IP1, A1, P1
+                {
+                    "order_id": "O001",
+                    "customer_id": "C1",
+                    "device_id": "D1",
+                    "ip_id": "IP1",
+                    "address_id": "A1",
+                    "payment_id": "P1",
+                    "purchase_date": pd.Timestamp("2025-01-15"),
+                },
+                # C2 uses D1, IP1, A2, P2  (shares D1 and IP1 with C1)
+                {
+                    "order_id": "O002",
+                    "customer_id": "C2",
+                    "device_id": "D1",
+                    "ip_id": "IP1",
+                    "address_id": "A2",
+                    "payment_id": "P2",
+                    "purchase_date": pd.Timestamp("2025-01-20"),
+                },
+                # C3 uses D2, IP2, A3, P3
+                {
+                    "order_id": "O003",
+                    "customer_id": "C3",
+                    "device_id": "D2",
+                    "ip_id": "IP2",
+                    "address_id": "A3",
+                    "payment_id": "P3",
+                    "purchase_date": pd.Timestamp("2025-02-01"),
+                },
+                # C4 uses D2, IP3, A4, P4  (shares D2 with C3)
+                {
+                    "order_id": "O004",
+                    "customer_id": "C4",
+                    "device_id": "D2",
+                    "ip_id": "IP3",
+                    "address_id": "A4",
+                    "payment_id": "P4",
+                    "purchase_date": pd.Timestamp("2025-02-05"),
+                },
+                # C5 uses D3, IP4, A5, P5  (isolated)
+                {
+                    "order_id": "O005",
+                    "customer_id": "C5",
+                    "device_id": "D3",
+                    "ip_id": "IP4",
+                    "address_id": "A5",
+                    "payment_id": "P5",
+                    "purchase_date": pd.Timestamp("2025-02-10"),
+                },
+            ]
+        )
+
+        returns = pd.DataFrame(
+            [
+                {
+                    "return_id": "R001",
+                    "order_id": "O001",
+                    "customer_id": "C1",
+                    "abuse_label": 1,
+                    "return_date": pd.Timestamp("2025-01-20"),
+                },
+                {
+                    "return_id": "R002",
+                    "order_id": "O002",
+                    "customer_id": "C2",
+                    "abuse_label": 1,
+                    "return_date": pd.Timestamp("2025-01-25"),
+                },
+                {
+                    "return_id": "R003",
+                    "order_id": "O003",
+                    "customer_id": "C3",
+                    "abuse_label": 0,
+                    "return_date": pd.Timestamp("2025-02-10"),
+                },
+                {
+                    "return_id": "R004",
+                    "order_id": "O004",
+                    "customer_id": "C4",
+                    "abuse_label": 0,
+                    "return_date": pd.Timestamp("2025-02-15"),
+                },
+                {
+                    "return_id": "R005",
+                    "order_id": "O005",
+                    "customer_id": "C5",
+                    "abuse_label": 0,
+                    "return_date": pd.Timestamp("2025-02-20"),
+                },
+            ]
+        )
+
+        return orders, returns
+
+    # ------------------------------------------------------------------ #
+    # Graph construction tests
+    # ------------------------------------------------------------------ #
+    def test_entity_index_structure(self):
+        """build_entity_index returns correct entity_type → entity_id → {customers}."""
+        from Backend.risk.graph_model import build_entity_index
+
+        orders, _ = self._make_orders_and_returns()
+        idx = build_entity_index(orders)
+
+        # D1 is used by C1 and C2
+        self.assertIn("device", idx)
+        self.assertEqual(idx["device"]["D1"], {"C1", "C2"})
+        self.assertEqual(idx["device"]["D2"], {"C3", "C4"})
+        self.assertEqual(idx["device"]["D3"], {"C5"})
+
+        # IP1 is used by C1 and C2
+        self.assertIn("ip", idx)
+        self.assertEqual(idx["ip"]["IP1"], {"C1", "C2"})
+
+    def test_customer_graph_edges(self):
+        """Shared entities create edges between customers."""
+        from Backend.risk.graph_model import (
+            build_customer_graph,
+            build_entity_index,
+        )
+
+        orders, _ = self._make_orders_and_returns()
+        entity_idx = build_entity_index(orders)
+        G, cust_entities = build_customer_graph(entity_idx)
+
+        # C1 and C2 share D1 and IP1 → should have an edge
+        self.assertTrue(G.has_edge("C1", "C2"))
+        edge_data = G["C1"]["C2"]
+        self.assertIn("device", edge_data["shared_types"])
+        self.assertIn("ip", edge_data["shared_types"])
+        self.assertEqual(edge_data["n_shared"], 2)
+
+        # C3 and C4 share D2 → should have an edge
+        self.assertTrue(G.has_edge("C3", "C4"))
+        self.assertEqual(G["C3"]["C4"]["n_shared"], 1)
+
+        # C5 is isolated → no edges
+        self.assertEqual(G.degree("C5"), 0)
+
+    def test_isolated_customer_zero_shared_counts(self):
+        """A customer with unique entities gets zero shared-entity counts."""
+        from Backend.risk.graph_model import (
+            build_customer_graph,
+            build_entity_index,
+            extract_customer_features,
+        )
+
+        orders, _ = self._make_orders_and_returns()
+        entity_idx = build_entity_index(orders)
+        G, cust_entities = build_customer_graph(entity_idx)
+        features = extract_customer_features(G, cust_entities, orders)
+
+        c5 = features[features["customer_id"] == "C5"].iloc[0]
+        self.assertEqual(c5["shared_device_customers"], 0)
+        self.assertEqual(c5["shared_ip_customers"], 0)
+        self.assertEqual(c5["shared_address_customers"], 0)
+        self.assertEqual(c5["shared_payment_customers"], 0)
+        self.assertEqual(c5["one_hop_customer_count"], 0)
+        self.assertEqual(c5["customer_degree"], 0)
+
+    def test_shared_customer_counts(self):
+        """Customers sharing entities have correct shared_*_customers counts."""
+        from Backend.risk.graph_model import (
+            build_customer_graph,
+            build_entity_index,
+            extract_customer_features,
+        )
+
+        orders, _ = self._make_orders_and_returns()
+        entity_idx = build_entity_index(orders)
+        G, cust_entities = build_customer_graph(entity_idx)
+        features = extract_customer_features(G, cust_entities, orders)
+
+        c1 = features[features["customer_id"] == "C1"].iloc[0]
+        # C1 shares D1 with C2, and IP1 with C2
+        self.assertEqual(c1["shared_device_customers"], 1)  # C2
+        self.assertEqual(c1["shared_ip_customers"], 1)  # C2
+        self.assertEqual(c1["one_hop_customer_count"], 1)  # only C2
+
+    def test_features_contain_no_target_columns(self):
+        """Graph features never include abuse_label, abuse_type, scenario, ring_id."""
+        from Backend.risk.graph_model import (
+            build_customer_graph,
+            build_entity_index,
+            extract_customer_features,
+        )
+
+        orders, _ = self._make_orders_and_returns()
+        entity_idx = build_entity_index(orders)
+        G, cust_entities = build_customer_graph(entity_idx)
+        features = extract_customer_features(G, cust_entities, orders)
+
+        for col in ("abuse_label", "abuse_type", "scenario", "ring_id"):
+            self.assertNotIn(col, features.columns)
+
+    def test_features_contain_expected_columns(self):
+        """Features DataFrame has all 17 expected columns + customer_id."""
+        from Backend.risk.graph_model import (
+            build_customer_graph,
+            build_entity_index,
+            extract_customer_features,
+            GRAPH_FEATURE_NAMES,
+        )
+
+        orders, _ = self._make_orders_and_returns()
+        entity_idx = build_entity_index(orders)
+        G, cust_entities = build_customer_graph(entity_idx)
+        features = extract_customer_features(G, cust_entities, orders)
+
+        self.assertIn("customer_id", features.columns)
+        for feat in GRAPH_FEATURE_NAMES:
+            self.assertIn(feat, features.columns, f"Missing feature: {feat}")
+
+    def test_temporal_excludes_future_orders(self):
+        """Graph built from a subset of orders does not include later edges."""
+        from Backend.risk.graph_model import (
+            build_customer_graph,
+            build_entity_index,
+            extract_customer_features,
+        )
+
+        orders, _ = self._make_orders_and_returns()
+        # Only use orders before Feb 1 (excludes C3, C4, C5 orders)
+        early_orders = orders[orders["purchase_date"] < "2025-02-01"]
+        entity_idx = build_entity_index(early_orders)
+        G, cust_entities = build_customer_graph(entity_idx)
+        features = extract_customer_features(G, cust_entities, early_orders)
+
+        customer_ids = set(features["customer_id"])
+        # C3, C4, C5 should NOT appear
+        self.assertNotIn("C3", customer_ids)
+        self.assertNotIn("C4", customer_ids)
+        self.assertNotIn("C5", customer_ids)
+
+    # ------------------------------------------------------------------ #
+    # Model integration tests
+    # ------------------------------------------------------------------ #
+    def test_fit_predict_evaluate(self):
+        """Full fit/predict/evaluate pipeline works on synthetic data."""
+        from Backend.risk.graph_model import GraphRiskModel
+
+        orders, returns = self._make_orders_and_returns()
+        model = GraphRiskModel(wandb_project="test-dummy")
+
+        with patch("Backend.risk.graph_model.wandb") as mock_wandb:
+            mock_wandb.init.return_value = MagicMock()
+            mock_wandb.Table.return_value = MagicMock()
+            mock_wandb.config = MagicMock()
+            mock_wandb.config.tmp_dir = tempfile.gettempdir()
+            model.fit(orders=orders, returns_df=returns)
+
+        self.assertIsNotNone(model.model)
+        self.assertEqual(len(model.feature_cols), 18)
+
+        # predict_proba returns probabilities in [0, 1]
+        proba_df = model.predict_proba(orders, returns)
+        self.assertIn("customer_id", proba_df.columns)
+        self.assertIn("network_risk_probability", proba_df.columns)
+        self.assertTrue(
+            np.all(
+                (proba_df["network_risk_probability"] >= 0)
+                & (proba_df["network_risk_probability"] <= 1)
+            )
+        )
+
+        # predict returns binary labels
+        pred_df = model.predict(orders, returns)
+        self.assertIn("network_risk_label", pred_df.columns)
+        self.assertTrue(
+            set(pred_df["network_risk_label"].unique()).issubset({0, 1})
+        )
+
+        # evaluate returns expected metrics
+        metrics = model.evaluate(orders, returns)
+        self.assertIn("accuracy", metrics)
+        self.assertIn("f1", metrics)
+        self.assertIn("roc_auc", metrics)
+        self.assertIn("false_positive_rate", metrics)
+
+    def test_save_and_load_roundtrip(self):
+        """Save and load produce identical predictions."""
+        from Backend.risk.graph_model import GraphRiskModel
+
+        orders, returns = self._make_orders_and_returns()
+        model = GraphRiskModel()
+
+        with patch("Backend.risk.graph_model.wandb") as mock_wandb:
+            mock_wandb.init.return_value = MagicMock()
+            mock_wandb.Table.return_value = MagicMock()
+            mock_wandb.config = MagicMock()
+            mock_wandb.config.tmp_dir = tempfile.gettempdir()
+            model.fit(orders=orders, returns_df=returns)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            save_path = Path(tmpdir) / "graph_model.joblib"
+            model.save(save_path)
+            self.assertTrue(save_path.exists())
+
+            loaded = GraphRiskModel.load(save_path)
+            self.assertEqual(loaded.feature_cols, model.feature_cols)
+            self.assertAlmostEqual(loaded.threshold, model.threshold)
+
+            proba_orig = model.predict_proba(orders, returns)
+            proba_loaded = loaded.predict_proba(orders, returns)
+            pd.testing.assert_frame_equal(proba_orig, proba_loaded)
+
+    def test_get_customer_risk_explanation(self):
+        """Risk explanation returns structured dict for a known customer."""
+        from Backend.risk.graph_model import GraphRiskModel
+
+        orders, returns = self._make_orders_and_returns()
+        model = GraphRiskModel()
+
+        with patch("Backend.risk.graph_model.wandb") as mock_wandb:
+            mock_wandb.init.return_value = MagicMock()
+            mock_wandb.Table.return_value = MagicMock()
+            mock_wandb.config = MagicMock()
+            mock_wandb.config.tmp_dir = tempfile.gettempdir()
+            model.fit(orders=orders, returns_df=returns)
+
+        explanation = model.get_customer_risk_explanation("C1", orders)
+        self.assertIn("network_risk_probability", explanation)
+        self.assertIn("entity_counts", explanation)
+        self.assertIn("sharing", explanation)
+        self.assertIn("neighborhood", explanation)
+        self.assertIn("community", explanation)
+        self.assertIn("structural", explanation)
+        self.assertIsNotNone(explanation["network_risk_probability"])
+
+    def test_unknown_customer_returns_error(self):
+        """Risk explanation for non-existent customer returns error dict."""
+        from Backend.risk.graph_model import GraphRiskModel
+
+        orders, returns = self._make_orders_and_returns()
+        model = GraphRiskModel()
+
+        with patch("Backend.risk.graph_model.wandb") as mock_wandb:
+            mock_wandb.init.return_value = MagicMock()
+            mock_wandb.Table.return_value = MagicMock()
+            mock_wandb.config = MagicMock()
+            mock_wandb.config.tmp_dir = tempfile.gettempdir()
+            model.fit(orders=orders, returns_df=returns)
+
+        explanation = model.get_customer_risk_explanation("C_NONEXISTENT", orders)
+        self.assertIn("error", explanation)
+
+
+class TestGraphRiskModelWandb(unittest.TestCase):
+    """Integration test: download the graph model from W&B and verify."""
+
+    def test_download_and_verify_signature(self):
+        wandb_key = os.getenv("WANDB")
+        if not wandb_key:
+            self.skipTest("WANDB env var not set; skipping W&B integration test")
+
+        os.environ["WANDB_API_KEY"] = wandb_key
+
+        from Backend.risk.graph_model import GraphRiskModel
+
+        model = GraphRiskModel.load_from_wandb(
+            project="returnguard",
+            tag="latest",
+        )
+
+        self.assertIsInstance(model, GraphRiskModel)
+        self.assertIsNotNone(model.model)
+        self.assertGreater(len(model.feature_cols), 0)
+        self.assertEqual(len(model.feature_cols), 18)
+
+        # Verify model can predict on synthetic orders
+        rng = np.random.RandomState(99)
+        n = 10
+        fake_orders = pd.DataFrame(
+            {
+                "order_id": [f"O{i:04d}" for i in range(n)],
+                "customer_id": [f"C{i // 2:04d}" for i in range(n)],
+                "device_id": [f"D{rng.randint(0, 3):04d}" for _ in range(n)],
+                "ip_id": [f"IP{rng.randint(0, 3):04d}" for _ in range(n)],
+                "address_id": [f"A{rng.randint(0, 3):04d}" for _ in range(n)],
+                "payment_id": [f"P{rng.randint(0, 3):04d}" for _ in range(n)],
+                "purchase_date": pd.date_range("2025-01-01", periods=n),
+            }
+        )
+        fake_returns = pd.DataFrame(
+            {
+                "return_id": [f"R{i:04d}" for i in range(5)],
+                "customer_id": [f"C{i:04d}" for i in range(5)],
+                "abuse_label": [0, 1, 0, 1, 0],
+            }
+        )
+
+        proba_df = model.predict_proba(fake_orders, fake_returns)
+        self.assertIn("customer_id", proba_df.columns)
+        self.assertIn("network_risk_probability", proba_df.columns)
+        self.assertTrue(
+            np.all(
+                (proba_df["network_risk_probability"] >= 0)
+                & (proba_df["network_risk_probability"] <= 1)
+            )
+        )
+
+
 class TestWandbArtifactDownload(unittest.TestCase):
     """Integration test: download the model from W&B and verify its signature.
 
@@ -327,7 +755,7 @@ class TestWandbArtifactDownload(unittest.TestCase):
         n_features = len(model.feature_cols)
         self.assertEqual(
             n_features,
-            model.model.coef_.shape[1],
+            model.model.coef_.shape[1], #type: ignore           
             "LogisticRegression coefficient count must match feature_cols",
         )
 
