@@ -271,7 +271,7 @@ Orders DataFrame (customer_id, device_id, ip_id, address_id, payment_id)
 ┌──────────────────────────────────────────────┐
 │  extract_customer_features(                  │  ← 18 features per customer
 │    customer_graph, customer_entities, orders)│     No target labels
-│  )                                           │
+│                                              │`
 └──────────────────┬───────────────────────────┘
                    │
                    ▼
