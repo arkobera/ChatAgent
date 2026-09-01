@@ -306,14 +306,18 @@ def render_network_svg(graph_data: dict, customer_id: str, score_map: dict[str, 
     )
 
     svg = f"""
+    <div style="width:100%;">
     <svg viewBox="0 0 {width} {height}" width="100%" height="{height}" role="img" aria-label="Customer network for {html.escape(customer_id)}" xmlns="http://www.w3.org/2000/svg">
       <defs><pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#e4bdba"/></pattern></defs>
       <rect width="100%" height="100%" fill="url(#grid)"/>
       <g>{''.join(edge_strs)}</g>
       <g font-family="Inter, sans-serif" font-size="12" fill="#191c1f">{''.join(node_strs)}</g>
       {legend}
-    </svg>"""
-    st.html(svg)
+    </svg>
+    </div>
+    """
+    # st.html(svg)
+    st.markdown(svg, unsafe_allow_html=True)
 
 
 def render_overview() -> None:
