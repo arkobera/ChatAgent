@@ -29,9 +29,9 @@ if str(FRONTEND_DIRECTORY) not in sys.path:
 if str(RISK_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(RISK_MODULE_DIR))
 
-from graph_model import GraphRiskModel, build_graph_snapshot  # noqa: E402
-from return_model import ReturnRiskModel  # noqa: E402
-from risk_engine import RiskEngine  # noqa: E402
+from Backend.risk.graph_model import GraphRiskModel, build_graph_snapshot  # noqa: E402 
+from Backend.risk.return_model import ReturnRiskModel  # noqa: E402
+from Backend.risk.risk_engine import RiskEngine  # noqa: E402
 
 
 load_dotenv()
@@ -53,12 +53,12 @@ def service_setting(name: str, default: str | None = None) -> str | None:
     return os.getenv(f"{name}_{APP_ENV}") or os.getenv(name, default)
 
 
-DATA_DIRECTORY = Path(service_setting("DATA_STORAGE_PATH", str(PROJECT_ROOT / "dataHub")))
+DATA_DIRECTORY = Path(service_setting("DATA_STORAGE_PATH", str(PROJECT_ROOT / "dataHub"))) #type: ignore
 
 supabase: Client | None = None
 if IS_PRODUCTION:
     supabase = create_client(  # type: ignore[arg-type]
-        service_setting("SUPABASE_URL"), service_setting("SUPABASE_KEY")
+        service_setting("SUPABASE_URL"), service_setting("SUPABASE_KEY") #type: ignore
     )
 
 
@@ -71,7 +71,7 @@ def require_authentication() -> None:
 
 def risk_badge(level: str) -> None:
     """Display the semantic risk status with native Streamlit styling."""
-    st.badge(level, color={"LOW": "green", "REVIEW": "orange", "HIGH": "red"}.get(level, "gray"))
+    st.badge(level, color={"LOW": "green", "REVIEW": "orange", "HIGH": "red"}.get(level, "gray")) #type: ignore
 
 
 @st.cache_data(ttl="15m", max_entries=2)
@@ -380,13 +380,13 @@ def render_network() -> None:
     customer_id = st.selectbox("Customer", customer_ids, key="network_customer")
     scores = all_network_scores()
     score_map = dict(zip(scores["customer_id"].astype(str), scores["network_risk_probability"]))
-    evidence = load_risk_engine().graph_model.get_customer_risk_explanation(customer_id, orders_df)
+    evidence = load_risk_engine().graph_model.get_customer_risk_explanation(customer_id, orders_df) #type: ignore
     left, right = st.columns([3, 1], vertical_alignment="top")
     with left:
         with st.container(border=True):
             st.subheader(f"Customer topology: `{customer_id}`")
             st.caption("Two-hop neighborhood in the entity graph.")
-            render_network_svg(graph_data, customer_id, score_map)
+            render_network_svg(graph_data, customer_id, score_map) #type: ignore
     with right:
         if "error" in evidence:
             st.error(evidence["error"])
@@ -429,7 +429,7 @@ def render_investigation() -> None:
             with st.spinner("Running behavioral and network inference..."):
                 engine = load_risk_engine()
                 result = engine.assess(selected, orders_df).iloc[0].to_dict()
-                evidence = engine.graph_model.get_customer_risk_explanation(customer_id, orders_df)
+                evidence = engine.graph_model.get_customer_risk_explanation(customer_id, orders_df) #type: ignore
             st.session_state["investigation_result"] = result
             st.session_state["investigation_evidence"] = evidence
             st.session_state.pop("investigation_explanation", None)
@@ -446,7 +446,7 @@ def render_investigation() -> None:
     with left:
         with st.container(border=True):
             st.subheader(f"Local topology: `{customer_id}`")
-            render_network_svg(graph_data, customer_id, score_map)
+            render_network_svg(graph_data, customer_id, score_map) #type: ignore
     with right:
         with st.container(border=True):
             st.metric("Combined risk", f"{float(result['overall_risk']):.1%}", border=True)
