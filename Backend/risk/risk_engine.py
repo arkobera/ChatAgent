@@ -25,8 +25,8 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
-from graph_model import GraphRiskModel
-from return_model import ReturnRiskModel
+from .graph_model import GraphRiskModel
+from .return_model import ReturnRiskModel
 
 
 class RiskEngine:
