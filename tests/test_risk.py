@@ -783,5 +783,115 @@ class TestWandbArtifactDownload(unittest.TestCase):
         self.assertTrue(set(np.unique(preds)).issubset({0, 1}))
 
 
+class TestRiskEngine(unittest.TestCase):
+    """Unit tests for combined return and network decision logic."""
+
+    @staticmethod
+    def _returns(labels: list[int] | None = None) -> pd.DataFrame:
+        labels = labels if labels is not None else [0, 1, 1]
+        return pd.DataFrame(
+            {
+                "return_id": [f"R{i}" for i in range(len(labels))],
+                "customer_id": [f"C{i}" for i in range(len(labels))],
+                "abuse_label": labels,
+            }
+        )
+
+    @staticmethod
+    def _engine(
+        return_scores: list[float], graph_scores: list[float]
+    ):
+        from Backend.risk.risk_engine import RiskEngine
+
+        return_model = MagicMock()
+        return_model.predict_proba.return_value = np.array(return_scores)
+        graph_model = MagicMock()
+        graph_model.predict_proba.return_value = pd.DataFrame(
+            {
+                "customer_id": [f"C{i}" for i in range(len(graph_scores))],
+                "network_risk_probability": graph_scores,
+            }
+        )
+        return RiskEngine(return_model, graph_model)
+
+    def test_assess_combines_scores_and_assigns_actions(self):
+        engine = self._engine([0.1, 0.2, 0.5, 0.9], [0.2, 0.45, 1.0, 0.6])
+        result = engine.assess(self._returns([0, 1, 1, 1]), pd.DataFrame())
+
+        self.assertEqual(
+            list(result.columns),
+            [
+                "return_id",
+                "customer_id",
+                "return_risk",
+                "network_risk",
+                "overall_risk",
+                "risk_level",
+                "recommended_action",
+            ],
+        )
+        np.testing.assert_allclose(result["overall_risk"], [0.14, 0.3, 0.7, 0.78])
+        self.assertEqual(
+            result["risk_level"].tolist(), ["LOW", "REVIEW", "HIGH", "HIGH"]
+        )
+        self.assertEqual(
+            result["recommended_action"].tolist(),
+            ["APPROVE", "MANUAL_REVIEW", "HOLD_AND_REVIEW", "HOLD_AND_REVIEW"],
+        )
+
+    def test_rejects_invalid_configuration_and_missing_network_scores(self):
+        from Backend.risk.risk_engine import RiskEngine
+
+        model = MagicMock()
+        with self.assertRaisesRegex(ValueError, "sum to 1"):
+            RiskEngine(model, model, behavioral_weight=0.7, graph_weight=0.4)
+        with self.assertRaisesRegex(ValueError, "less than"):
+            RiskEngine(model, model, review_threshold=0.7, high_threshold=0.7)
+
+        engine = self._engine([0.2], [])
+        with self.assertRaisesRegex(ValueError, "No network risk score"):
+            engine.assess(self._returns([0]), pd.DataFrame())
+
+    def test_evaluate_uses_review_threshold_as_positive_cutoff(self):
+        engine = self._engine([0.1, 0.4, 0.9, 0.6], [0.1, 0.4, 0.9, 0.6])
+        metrics = engine.evaluate(self._returns([0, 1, 1, 0]), pd.DataFrame())
+
+        self.assertEqual(metrics["evaluation_threshold"], 0.3)
+        self.assertEqual(metrics["true_negatives"], 1)
+        self.assertEqual(metrics["false_positives"], 1)
+        self.assertEqual(metrics["false_negatives"], 0)
+        self.assertEqual(metrics["true_positives"], 2)
+        self.assertIsNotNone(metrics["roc_auc"])
+        self.assertIsNotNone(metrics["pr_auc"])
+
+    def test_evaluate_returns_no_auc_for_single_class_labels(self):
+        engine = self._engine([0.1, 0.4], [0.1, 0.4])
+        metrics = engine.evaluate(self._returns([0, 0]), pd.DataFrame())
+
+        self.assertIsNone(metrics["roc_auc"])
+        self.assertIsNone(metrics["pr_auc"])
+
+    def test_from_wandb_loads_production_artifacts(self):
+        from Backend.risk.risk_engine import RiskEngine
+
+        return_model = MagicMock()
+        graph_model = MagicMock()
+        with patch.dict(os.environ, {"WANDB": "test-key"}, clear=False), patch(
+            "Backend.risk.risk_engine.load_dotenv"
+        ), patch(
+            "Backend.risk.risk_engine.ReturnRiskModel.load_from_wandb",
+            return_value=return_model,
+        ) as load_return, patch(
+            "Backend.risk.risk_engine.GraphRiskModel.load_from_wandb",
+            return_value=graph_model,
+        ) as load_graph:
+            engine = RiskEngine.from_wandb()
+
+        self.assertIs(engine.return_model, return_model)
+        self.assertIs(engine.graph_model, graph_model)
+        self.assertEqual(load_return.call_args.kwargs["tag"], "production")
+        self.assertEqual(load_graph.call_args.kwargs["tag"], "production")
+
+
 if __name__ == "__main__":
     unittest.main()
