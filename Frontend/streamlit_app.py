@@ -22,6 +22,8 @@ from Authentication.auth import Auth, AuthScreen
 FRONTEND_DIRECTORY = Path(__file__).resolve().parent
 PROJECT_ROOT = FRONTEND_DIRECTORY.parents[0]
 RISK_MODULE_DIR = PROJECT_ROOT / "Backend" / "risk"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 if str(FRONTEND_DIRECTORY) not in sys.path:
     sys.path.insert(0, str(FRONTEND_DIRECTORY))
 # The current engine uses sibling imports. Accommodate that in the frontend
